@@ -21,7 +21,10 @@ bun install --frozen-lockfile
 bun run test
 bun run typecheck
 bun run index
+bun run audit:ops
 ```
+
+`bun run audit:ops` performs a read-only audit across all checked-in reference documents to identify conflicting deadlines, venue hours, shuttle schedules, and outdated availability statements.
 
 `bun run index` refreshes local references only; it does not commit or publish them. GitHub Actions runs offline validation only; it never fetches sources or publishes references.
 
@@ -45,6 +48,7 @@ See [`infra/README.md`](./infra/README.md) for deployment, manual execution, log
 - `scripts/reference-state.ts` — snapshot, source, hash, and payload validation.
 - `scripts/lambda-handler.ts` — credential-free Lambda generation.
 - `scripts/refresh-aws.ts` — CodeBuild invocation and reference-only Git publication.
+- `scripts/audit/` — read-only operational facts consistency auditor and CLI.
 - `infra/` — versioned AWS configuration, runtime, CloudFormation, deployment, and scheduling controls.
 - `tests/` — offline regression, infrastructure, and reference-integrity tests.
 - `.github/workflows/test.yml` — offline validation with read-only permissions.
