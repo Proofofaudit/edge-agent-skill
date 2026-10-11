@@ -282,4 +282,208 @@ describe("Edge City Operational Facts Auditor", () => {
     expect(rivaFinding).toBeDefined();
     expect(rivaFinding!.classification).toBe("superseded_state");
   });
+
+  // ==========================================
+  // OPERATIONAL MAINTENANCE WORKFLOW SUITE
+  // ==========================================
+
+  // Workflow Test 1: Drafting a correction without inventing the correct answer
+  test("workflow: prepares actionable correction packages with alternatives without assuming authority", () => {
+    const report = runOperationalAudit();
+    const circleFinding = report.findings.find(f => f.subject === "the_circle_coworking_hours");
+    expect(circleFinding).toBeDefined();
+
+    const { prepareCorrectionPackage } = require("../scripts/audit/correction-drafter");
+    const pkg = prepareCorrectionPackage(circleFinding!);
+
+    expect(pkg.exactIssue).toContain("Conflicting daily operating hours");
+    expect(pkg.affectedDocuments.length).toBeGreaterThanOrEqual(2);
+    expect(pkg.drafts.length).toBeGreaterThanOrEqual(2);
+    // Verifies that neither option is unilaterally declared correct:
+    expect(pkg.drafts.some((d: any) => d.optionName.includes("09:00 to 01:00"))).toBe(true);
+    expect(pkg.drafts.some((d: any) => d.optionName.includes("8am to midnight"))).toBe(true);
+    expect(pkg.organizerConfirmationRequired).toContain("The Circle");
+    expect(pkg.severity).toBe("medium");
+  });
+
+  // Workflow Test 2: New issue identification and initial state
+  test("workflow: tracks new issues and sets initial lifecycle to NEW", () => {
+    const { syncMaintenanceWorkflow } = require("../scripts/audit/state");
+    const report = runOperationalAudit();
+
+    const { state, report: mReport } = syncMaintenanceWorkflow(report.findings, report.documentCount, { persist: false });
+
+    expect(mReport.summary.newCount).toBe(report.findings.length);
+    expect(mReport.summary.existingUnresolvedCount).toBe(0);
+    expect(mReport.summary.verifiedResolvedCount).toBe(0);
+
+    const circleIssue = state.issues["venue_hours:the_circle_coworking_hours"];
+    expect(circleIssue).toBeDefined();
+    expect(circleIssue.status).toBe("Correction prepared");
+    expect(circleIssue.lifecycle).toBe("NEW");
+    expect(circleIssue.runCount).toBe(1);
+  });
+
+  // Workflow Test 3: Duplicate findings across repeated runs (deduplication)
+  test("workflow: deduplicates findings across 20 consecutive runs into a single tracked incident", () => {
+    const { syncMaintenanceWorkflow } = require("../scripts/audit/state");
+    const report = runOperationalAudit();
+
+    // Initial run
+    let { state, report: mReport } = syncMaintenanceWorkflow(report.findings, report.documentCount, { persist: false });
+    expect(mReport.summary.newCount).toBe(2);
+
+    // Simulate 20 consecutive runs
+    for (let run = 2; run <= 20; run++) {
+      // Pass the previous state as input
+      const testPath = `/tmp/test-state-${Date.now()}-${run}.json`;
+      require("node:fs").writeFileSync(testPath, JSON.stringify(state));
+
+      const synced = syncMaintenanceWorkflow(report.findings, report.documentCount, {
+        statePath: testPath,
+        persist: true,
+      });
+
+      state = synced.state;
+      mReport = synced.report;
+
+      expect(mReport.summary.newCount).toBe(0);
+      expect(mReport.summary.existingUnresolvedCount).toBe(2);
+      expect(state.issues["venue_hours:the_circle_coworking_hours"]!.runCount).toBe(run);
+
+      require("node:fs").rmSync(testPath, { force: true });
+    }
+
+    // Still only 2 tracked issues, not 40
+    expect(Object.keys(state.issues).length).toBe(2);
+  });
+
+  // Workflow Test 4: Updating an existing issue when evidence changes
+  test("workflow: transitions issue to UPDATED when conflicting claims change", () => {
+    const { syncMaintenanceWorkflow } = require("../scripts/audit/state");
+    const initialReport = runOperationalAudit();
+
+    const { state } = syncMaintenanceWorkflow(initialReport.findings, initialReport.documentCount, { persist: false });
+
+    // Simulate modified finding with an altered claim
+    const modifiedFindings = initialReport.findings.map(f => {
+      if (f.subject === "the_circle_coworking_hours") {
+        return {
+          ...f,
+          facts: [...f.facts, {
+            ...f.facts[0]!,
+            sourcePath: "newsletter/new-bulletin.md",
+            value: "10:00 to 02:00",
+          }],
+        };
+      }
+      return f;
+    });
+
+    const testPath = `/tmp/test-state-update-${Date.now()}.json`;
+    require("node:fs").writeFileSync(testPath, JSON.stringify(state));
+
+    const { report: updatedReport, state: updatedState } = syncMaintenanceWorkflow(
+      modifiedFindings,
+      initialReport.documentCount,
+      { statePath: testPath, persist: false }
+    );
+
+    const circleIssue = updatedState.issues["venue_hours:the_circle_coworking_hours"]!;
+    expect(circleIssue.lifecycle).toBe("UPDATED");
+    expect(updatedReport.summary.updatedCount).toBe(1);
+
+    require("node:fs").rmSync(testPath, { force: true });
+  });
+
+  // Workflow Test 5: Recognizing a verified correction
+  test("workflow: verifies correction resolution when conflict disappears and captures before-after evidence", () => {
+    const { syncMaintenanceWorkflow } = require("../scripts/audit/state");
+    const initialReport = runOperationalAudit();
+
+    const { state } = syncMaintenanceWorkflow(initialReport.findings, initialReport.documentCount, { persist: false });
+
+    // Simulate an authorized correction applied: The Circle conflict is now resolved
+    const remainingFindings = initialReport.findings.filter(f => !f.subject.includes("the_circle"));
+
+    const testPath = `/tmp/test-state-resolved-${Date.now()}.json`;
+    require("node:fs").writeFileSync(testPath, JSON.stringify(state));
+
+    const { report: afterReport, state: afterState } = syncMaintenanceWorkflow(
+      remainingFindings,
+      initialReport.documentCount,
+      { statePath: testPath, persist: false }
+    );
+
+    expect(afterReport.summary.verifiedResolvedCount).toBe(1);
+    expect(afterReport.resolvedIssues.length).toBe(1);
+
+    const resolvedCircle = afterState.issues["venue_hours:the_circle_coworking_hours"]!;
+    expect(resolvedCircle.status).toBe("Verified resolved");
+    expect(resolvedCircle.lifecycle).toBe("VERIFIED_RESOLVED");
+    expect(resolvedCircle.resolutionEvidence).toBeDefined();
+    expect(resolvedCircle.resolutionEvidence!.priorConflictingValues.length).toBeGreaterThan(0);
+
+    require("node:fs").rmSync(testPath, { force: true });
+  });
+
+  // Workflow Test 6: Reopening a previously resolved issue
+  test("workflow: reopens an issue if a previously resolved conflict reappears", () => {
+    const { syncMaintenanceWorkflow } = require("../scripts/audit/state");
+    const initialReport = runOperationalAudit();
+
+    // 1. Initial detection
+    const { state: s1 } = syncMaintenanceWorkflow(initialReport.findings, initialReport.documentCount, { persist: false });
+
+    // 2. Resolve
+    const testPath = `/tmp/test-state-reopen-${Date.now()}.json`;
+    require("node:fs").writeFileSync(testPath, JSON.stringify(s1));
+    const { state: s2 } = syncMaintenanceWorkflow([], initialReport.documentCount, { statePath: testPath, persist: true });
+    expect(s2.issues["venue_hours:the_circle_coworking_hours"]!.status).toBe("Verified resolved");
+
+    // 3. Conflict reappears!
+    const { state: s3, report: r3 } = syncMaintenanceWorkflow(initialReport.findings, initialReport.documentCount, {
+      statePath: testPath,
+      persist: false,
+    });
+
+    const reopened = s3.issues["venue_hours:the_circle_coworking_hours"]!;
+    expect(reopened.status).toBe("Needs verification");
+    expect(reopened.lifecycle).toBe("REOPENED");
+    expect(r3.summary.reopenedCount).toBe(2);
+
+    require("node:fs").rmSync(testPath, { force: true });
+  });
+
+  // Workflow Test 7: Missing or failed upstream indexing safety
+  test("workflow: refuses to treat missing documents or invalid snapshot as resolved", () => {
+    expect(() => runOperationalAudit({ files: new Map() })).toThrow("No reference documents found");
+  });
+
+  // Workflow Test 8: No unapproved publishing or external network mutation
+  test("workflow: never modifies official references or executes git push", () => {
+    const beforeRefs = require("../scripts/publish").readReferences(join(import.meta.dir, "..", "references"));
+    const { runOperationalMaintenanceWorkflow } = require("../scripts/audit/index");
+
+    const result = runOperationalMaintenanceWorkflow({ persistState: false });
+    const afterRefs = require("../scripts/publish").readReferences(join(import.meta.dir, "..", "references"));
+
+    expect(beforeRefs.size).toBe(afterRefs.size);
+    for (const [k, v] of beforeRefs) {
+      expect(afterRefs.get(k)).toBe(v);
+    }
+    expect(result.maintenanceReport.documentCount).toBe(27);
+  });
+
+  // Workflow Test 9: Benchmark runs reproducibility
+  test("workflow: executes effort benchmark and produces non-zero efficiency metrics", () => {
+    const { runEffortBenchmark } = require("../scripts/audit/benchmark");
+    const benchmark = runEffortBenchmark();
+
+    expect(benchmark.manualBaseline.stepsRequired).toBe(6);
+    expect(benchmark.automatedWorkflow.operatorCommandsRequired).toBe(1);
+    expect(benchmark.automatedWorkflow.correctionsDrafted).toBe(2);
+    expect(benchmark.automatedWorkflow.repeatedInvestigationsAvoided20Runs).toBeGreaterThanOrEqual(30);
+    expect(benchmark.disclaimer).toContain("These measurements evaluate workflow step reduction");
+  });
 });

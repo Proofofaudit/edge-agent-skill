@@ -24,7 +24,22 @@ bun run index
 bun run audit:ops
 ```
 
-`bun run audit:ops` performs a read-only audit across all checked-in reference documents to identify conflicting deadlines, venue hours, shuttle schedules, and outdated availability statements.
+`bun run audit:ops` runs the **Operational Information Maintenance Workflow**. Instead of passively listing conflicts, it provides an end-to-end maintainer workflow:
+1. **Detects** factual discrepancies across checked-in public references (Notion Wiki, Substack guides, Webflow website).
+2. **Explains** root cause, exact verbatim quotations, timestamps, and attendee impact.
+3. **Prepares actionable correction packages** with explicit Option A vs Option B copy, replacement diffs, and confirmation questions without assuming unilateral authority.
+4. **Tracks issue lifecycles** (`NEW` → `EXISTING_UNRESOLVED` → `UPDATED` → `VERIFIED_RESOLVED` → `REOPENED`) in `.maintenance-state.json`, eliminating alert fatigue across repeated runs.
+5. **Verifies resolution** automatically when conflicting claims disappear after upstream source edits.
+
+#### Maintenance CLI options:
+- `bun run audit:ops` — Run maintenance workflow and display active queue with correction packages.
+- `bun run audit:ops --benchmark` — Run the reproducible effort benchmark comparing manual baseline steps vs. automated workflow.
+- `bun run audit:ops --audit-only` — Run pure conflict detection without updating lifecycle state.
+- `bun run audit:ops --strict` — Exit with non-zero code if active discrepancies are detected (ideal for CI).
+- `bun run audit:ops --json` — Output machine-readable JSON maintenance report.
+- `bun run audit:ops --out <file>` — Save Markdown or JSON report to disk.
+- `bun run audit:ops --state <path>` — Specify custom path for the state ledger.
+- `bun run audit:ops --mark <id> <status>` — Update workflow status (`Draft prepared`, `Confirmed`, `Awaiting organizer`, `Dismissed`).
 
 `bun run index` refreshes local references only; it does not commit or publish them. GitHub Actions runs offline validation only; it never fetches sources or publishes references.
 

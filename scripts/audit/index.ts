@@ -1,5 +1,5 @@
 // Edge City Operational Facts Auditor — Core Engine
-// Orchestrates document reading, fact extraction, conflict comparison, and report generation.
+// Orchestrates document reading, fact extraction, conflict comparison, and maintenance state synchronization.
 
 import { join } from "node:path";
 import { readReferences } from "../publish";
@@ -7,13 +7,19 @@ import { validateSnapshot } from "../reference-state";
 import { EVENT } from "../sources";
 import { extractFactsFromDocument } from "./extractor";
 import { compareOperationalFacts } from "./comparator";
-import type { AuditReport, OperationalFact, Discrepancy } from "./types";
+import { syncMaintenanceWorkflow } from "./state";
+import type { AuditReport, OperationalFact, Discrepancy, MaintenanceReport, MaintenanceState } from "./types";
 
 export interface RunAuditOptions {
   referencesDir?: string;
   files?: Map<string, string>;
   skipManifestValidation?: boolean;
   now?: string;
+}
+
+export interface RunMaintenanceWorkflowOptions extends RunAuditOptions {
+  statePath?: string;
+  persistState?: boolean;
 }
 
 export function runOperationalAudit(options: RunAuditOptions = {}): AuditReport {
@@ -70,4 +76,22 @@ export function runOperationalAudit(options: RunAuditOptions = {}): AuditReport 
       cleanScan: confirmedCount === 0 && possibleCount === 0,
     },
   };
+}
+
+export function runOperationalMaintenanceWorkflow(options: RunMaintenanceWorkflowOptions = {}): {
+  auditReport: AuditReport;
+  maintenanceReport: MaintenanceReport;
+  state: MaintenanceState;
+} {
+  const auditReport = runOperationalAudit(options);
+  const { state, report: maintenanceReport } = syncMaintenanceWorkflow(
+    auditReport.findings,
+    auditReport.documentCount,
+    {
+      statePath: options.statePath,
+      now: options.now ?? auditReport.generatedAt,
+      persist: options.persistState,
+    }
+  );
+  return { auditReport, maintenanceReport, state };
 }
